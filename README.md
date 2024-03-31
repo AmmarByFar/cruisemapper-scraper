@@ -24,17 +24,17 @@ This Python script scrapes cruise ship itinerary data from the website [https://
 1. Clone the repository or download the script file.
 
 2. Install the required Python packages by running the following command:
-
+```
 pip install requests beautifulsoup4
-
+```
 ## Usage
 
 1. Open a terminal or command prompt and navigate to the directory where the script is located.
 
 2. Run the script using the following command:
-
+```
 python scrape.py [--remove-duplicates] [--delay-time DELAY_TIME]
-
+```
 - `--remove-duplicates` (optional): If specified, the script will remove duplicate records from the generated CSV file based on port and date.
 - `--delay-time DELAY_TIME` (optional): Specifies the delay time in seconds between requests to avoid rate limiting. Default is 0.7 seconds.
 
