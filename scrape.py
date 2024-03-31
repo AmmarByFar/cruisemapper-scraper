@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import logging
 import math
@@ -9,14 +9,16 @@ import json
 import re
 import os
 
-# Define the delay time in seconds
-delay_time = 0.6
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-try:
-    with open('processed_ships.txt', 'r') as file:
-        processed_ships = [line.strip() for line in file]
-except FileNotFoundError:
-    processed_ships = []
+# Define the delay time in seconds
+delay_time = 0.7
+
+def fill_in_dates(start_date, end_date):
+    # Create a list of all dates from the start to the end
+    all_dates = [start_date + timedelta(days=x) for x in range((end_date-start_date).days + 1)]
+    return all_dates
 
 def parse_date_time(date_time_text, year):
     # Define the regular expressions for the different date formats
@@ -35,24 +37,37 @@ def parse_date_time(date_time_text, year):
             # If a match is found, parse the date and time
             date_str = match.group(1)
             try:
-                date = datetime.strptime(f"{date_str} {year}", f"{date_format} %Y")
+                start_date = datetime.strptime(f"{date_str} {year}", f"{date_format} %Y")
             except ValueError:
                 date_format = "%d %b"
-                date = datetime.strptime(f"{date_str} {year}", f"{date_format} %Y")
-            date = date.strftime('%Y-%m-%d')
+                start_date = datetime.strptime(f"{date_str} {year}", f"{date_format} %Y")
 
-            # If there is a second group, it is the time
+            # If there is a second group, it is the end date
+            end_date = start_date
             if match.lastindex >= 2:
+                end_date_str = match.group(2)
+                try:
+                    end_date = datetime.strptime(f"{end_date_str} {year}", f"{date_format} %Y")
+                except ValueError:
+                    pass
+
+            # Generate a list of dates from start_date to end_date
+            date = start_date
+            dates = []
+            while date <= end_date:
+                dates.append(date.strftime('%Y-%m-%d'))
+                date += timedelta(days=1)
+
+            # Set the time string based on the matched regex
+            time_str = ""
+            if regex == r"(\d{1,2} \w{3}) (\d{2}:\d{2}) - (\d{2}:\d{2})":
+                time_str = f"{match.group(2)} - {match.group(3)}"
+            elif regex == r"(\d{1,2} \w{3}) (\d{2}:\d{2})":
                 time_str = match.group(2)
-                if match.lastindex >= 3:
-                    time_str += " - " + match.group(3)
-            else:
-                time_str = ""
+            elif match.lastindex >= 3:
+                time_str = match.group(3)
 
-            return date, time_str
-
-    # If no regex matches, the date and time are unknown
-    return "", ""
+            return dates, time_str, year
 
 def handle_response(response):
     if response.status_code == 200:
@@ -62,9 +77,6 @@ def handle_response(response):
         raise Exception("Rate limit exceeded.")
     else:
         logging.warning(f"Request failed, status code: {response.status_code}")
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 
 base_url = "https://www.cruisemapper.com/ships?page="
 start_page = 1
@@ -81,12 +93,21 @@ print(f"Total ships: {total_ships}")
 ships_per_page = 15
 end_page = math.ceil(total_ships / ships_per_page)
 
-# Check if the file exists and is non-empty
+processed_data = set()
+try:
+    with open('itineraries.csv', 'r') as file:
+        reader = csv.reader(file)
+        next(reader)  # Skip the header row
+        for row in reader:
+            itinerary_id, ship_name = row[0], row[2]
+            processed_data.add((itinerary_id, ship_name))
+except FileNotFoundError:
+    pass
+
 if not os.path.isfile('itineraries.csv') or os.stat('itineraries.csv').st_size == 0:
-    # Open the CSV file in write mode to write the header
     with open('itineraries.csv', 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["Cruise Line", "Ship Name", "Date", "Time", "Port", "Max Passengers", "Crew"])
+        writer.writerow(["Itinerary Id","Cruise Line", "Ship Name", "Date", "Time", "Port", "Max Passengers", "Crew"])
 
 with open('itineraries.csv', 'a', newline='') as file:
     writer = csv.writer(file)
@@ -98,7 +119,7 @@ with open('itineraries.csv', 'a', newline='') as file:
         handle_response(response)
 
         if response.status_code == 200:
-            logging.info("Request successful, received data.")
+            logging.info(f"Processing page {page} of {end_page}")
         else:
             logging.warning(f"Request failed, status code: {response.status_code}")
 
@@ -108,87 +129,99 @@ with open('itineraries.csv', 'a', newline='') as file:
         for ship in ship_list:
             ship_name = ship.find("h3").text.strip()
 
-            # If the ship has been processed before, skip it
-            if ship_name in processed_ships:
-                print(f"Ship {ship_name} has already been processed, skipping.")
-                continue
-
             ship_url = ship.find("a", href=True)["href"]
-            print(f"Scraping itinerary for ship: {ship_name}")
-            print(f"URL: {ship_url}")
+            logging.info(f"Scraping itinerary for ship: {ship_name}")
 
             if "/ships/" in ship_url:
-                # Visit each ship's URL and save the itinerary data
-                time.sleep(delay_time)  # Delay between requests to avoid rate limiting
-                ship_response = requests.get(ship_url, headers=headers)
-                handle_response(ship_response)
-                ship_soup = BeautifulSoup(ship_response.text, "html.parser")
-
-                # Extract the maximum passengers and crew numbers
-                max_passengers = None
-                crew = None
-                table_rows = ship_soup.find_all("tr")
-                for row in table_rows:
-                    cells = row.find_all("td")
-                    if len(cells) >= 2:
-                        try:
-                            if cells[0].text == "Passengers":
-                                # If the passengers number is a range, take the maximum number
-                                numbers = re.findall(r'\d+', cells[1].text)
-                                if numbers:
-                                    max_passengers = max(map(int, numbers))
-                                else:
-                                    max_passengers = ""
-                            elif cells[0].text == "Crew":
-                                crew = int(cells[1].text)
-                        except ValueError:
-                            # If the conversion to int fails, replace with an empty string
-                            if cells[0].text == "Passengers":
-                                max_passengers = ""
-                            elif cells[0].text == "Crew":
-                                crew = ""
-
-                cruise_line = ship_soup.find("a", class_="shipCompanyLink").text.strip()  # Extract the cruise line
-                print(f"Cruise Line: {cruise_line}")
-                itinerary_rows = ship_soup.find_all("tr", {"data-row": True})
-
-                for row in itinerary_rows:
-                    id_number = row["data-row"]
-                     # Extract the year from the 'cruiseDatetime' class
-                    year = int(row.find("td", class_="cruiseDatetime").text.split()[0])
+                try:
+                    # Visit each ship's URL and save the itinerary data
                     time.sleep(delay_time)  # Delay between requests to avoid rate limiting
-                    cruise_url = f"https://www.cruisemapper.com/ships/cruise.json?id={id_number}"
-                    ajax_headers = headers.copy()  
-                    ajax_headers["X-Requested-With"] = "XMLHttpRequest"  
-                    print(f"Scraping itinerary for cruise: {id_number}")
-                    print(f"URL: {cruise_url}")
-                    cruise_response = requests.get(cruise_url, headers=ajax_headers)  
-                    handle_response(cruise_response)
-                    cruise_data = json.loads(cruise_response.text)
-                    cruise_soup = BeautifulSoup(cruise_data["result"], "html.parser")
-                    date_times = cruise_soup.find_all("td", class_="date")
-                    ports = cruise_soup.find_all("td", class_="text")
+                    ship_response = requests.get(ship_url, headers=headers)
+                    handle_response(ship_response)
+                    ship_soup = BeautifulSoup(ship_response.text, "html.parser")
 
-                    prev_month = None
-                    for date_time, port in zip(date_times, ports):
-                        date, time_str = parse_date_time(date_time.text, year)
-                        month = datetime.strptime(date, '%Y-%m-%d').month
-                        if prev_month == 12 and month == 1:
-                            year += 1
-                        prev_month = month
-                        port_text = port.text.strip()
-                        port_text = port_text.replace("Arriving in ", "")
-                        port_text = port_text.replace(" hotels", "")
-                        port_text = port_text.replace("Departing from ", "")
-                        writer.writerow([cruise_line, ship_name, date, time_str, port_text, max_passengers, crew])
-                        print(f"Date: {date}, Time: {time_str}, Port: {port_text}")
+                    # Extract the maximum passengers and crew numbers
+                    max_passengers = None
+                    crew = None
+                    table_rows = ship_soup.find_all("tr")
+                    for row in table_rows:
+                        cells = row.find_all("td")
+                        if len(cells) >= 2:
+                            try:
+                                if cells[0].text == "Passengers":
+                                    # If the passengers number is a range, take the maximum number
+                                    numbers = re.findall(r'\d+', cells[1].text)
+                                    if numbers:
+                                        max_passengers = max(map(int, numbers))
+                                    else:
+                                        max_passengers = ""
+                                elif cells[0].text == "Crew":
+                                    crew = int(cells[1].text)
+                            except ValueError:
+                                # If the conversion to int fails, replace with an empty string
+                                if cells[0].text == "Passengers":
+                                    max_passengers = ""
+                                elif cells[0].text == "Crew":
+                                    crew = ""
 
-                # After processing the ship, add it to the list of processed ships
-                processed_ships.append(ship_name)
+                    cruise_line = ship_soup.find("a", class_="shipCompanyLink").text.strip()  # Extract the cruise line
+                    print(f"Cruise Line: {cruise_line}")
+                    itinerary_rows = ship_soup.find_all("tr", {"data-row": True})
 
-                # And save the updated list to the file
-                with open('processed_ships.txt', 'a') as file:
-                    file.write(ship_name + '\n')
+                    for row in itinerary_rows:
+                        id_number = row["data-row"]
+                        logging.info(f"Processing itinerary row {id_number}")
 
-        # Delay between requests to avoid rate limiting
-        time.sleep(delay_time) 
+                        # Check if the current itinerary ID and ship name combination has already been processed
+                        if (id_number, ship_name) in processed_data:
+                            logging.info(f"Itinerary {id_number} for ship {ship_name} has already been processed, skipping.")
+                            continue
+
+                        # Extract the year from the 'cruiseDatetime' class
+                        year = int(row.find("td", class_="cruiseDatetime").text.split()[0])
+                        time.sleep(delay_time)
+                        cruise_url = f"https://www.cruisemapper.com/ships/cruise.json?id={id_number}"
+                        ajax_headers = headers.copy()  
+                        ajax_headers["X-Requested-With"] = "XMLHttpRequest"  
+                        cruise_response = requests.get(cruise_url, headers=ajax_headers)  
+                        handle_response(cruise_response)
+                        cruise_data = json.loads(cruise_response.text)
+                        cruise_soup = BeautifulSoup(cruise_data["result"], "html.parser")
+                        date_times = cruise_soup.find_all("td", class_="date")
+                        ports = cruise_soup.find_all("td", class_="text")
+
+                        prev_date = None
+                        for date_time, port in zip(date_times, ports):
+                            dates, time_data, year = parse_date_time(date_time.text, year)
+                            for date in dates:
+                                if prev_date:
+                                    days_diff = (datetime.strptime(date, '%Y-%m-%d') - prev_date).days
+                                    if days_diff < 0:
+                                        # If the date is earlier than the previous date, increment the year
+                                        year += 1
+                                        date = datetime.strptime(date, '%Y-%m-%d').replace(year=year).strftime('%Y-%m-%d')
+                                    elif days_diff > 1:
+                                        # Fill in the missing "At Sea" days
+                                        gap_date = prev_date + timedelta(days=1)
+                                        while gap_date < datetime.strptime(date, '%Y-%m-%d'):
+                                            writer.writerow([id_number, cruise_line, ship_name, gap_date.strftime('%Y-%m-%d'), "", "At Sea", max_passengers, crew])
+                                            gap_date += timedelta(days=1)
+
+                                port_text = port.text.strip()
+                                port_text = port_text.replace("Arriving in ", "")
+                                port_text = port_text.replace(" hotels", "")
+                                port_text = port_text.replace("Departing from ", "")
+                                writer.writerow([id_number, cruise_line, ship_name, date, time_data, port_text, max_passengers, crew])
+                                logging.info(f"Wrote row for date {date} and port {port_text}")
+                                prev_date = datetime.strptime(date, '%Y-%m-%d')
+                        # Add the processed itinerary ID and ship name combination to the set
+                        processed_data.add((id_number, ship_name))
+
+                    logging.info(f"Finished processing ship {ship_name}")
+
+                except Exception as e:
+                    logging.error(f"An error occurred: {str(e)}")
+                    raise
+
+        time.sleep(delay_time)
+        logging.info(f"Finished processing page {page}, sleeping for {delay_time} seconds")
