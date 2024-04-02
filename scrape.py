@@ -9,7 +9,6 @@ import json
 import re
 import os
 import argparse
-import tempfile
 import atexit
 
 # Set up logging
@@ -40,12 +39,12 @@ def remove_duplicates_from_csv(csv_file):
     seen_records = set()
 
     for row in rows:
-        record_key = (row[3], row[5])  # Create a unique key based on date and port
+        record_key = (row[1], row[2], row[3], row[5])  # Create a unique key based on date and port
         if record_key not in seen_records:
             seen_records.add(record_key)
             unique_rows.append(row)
         else:
-            logging.info(f"Duplicate record found for date {row[3]} and port {row[5]}, removing.")
+            logging.info(f"Duplicate record found for cruiseline {row[1]}, ship {row[2]} date {row[3]} and port {row[5]}, removing.")
 
     # Write the unique rows to a new CSV file with a different name
     new_csv_file = 'itineraries_without_duplicates.csv'
@@ -264,6 +263,7 @@ if __name__ == '__main__':
                                         port_text = port_text.replace("Arriving in ", "")
                                         port_text = port_text.replace(" hotels", "")
                                         port_text = port_text.replace("Departing from ", "")
+                                        port_text = port_text.rstrip()
                                         writer.writerow([id_number, cruise_line, ship_name, date, time_data, port_text, max_passengers, crew])
                                         logging.info(f"Wrote row for date {date} and port {port_text}")
                                         prev_date = datetime.strptime(date, '%Y-%m-%d')
@@ -281,9 +281,9 @@ if __name__ == '__main__':
         if(args.remove_duplicates):
             logging.info("Removing duplicate records from CSV file.")
             remove_duplicates_from_csv('itineraries.csv')
-            
+
     except KeyboardInterrupt:
-        logging.info("Script interrupted by keyboard. Cleaning up...")
+        logging.info("Script interrupted by keyboard. Removing duplicates...")
     finally:
         logging.info("Script finished.")
     
